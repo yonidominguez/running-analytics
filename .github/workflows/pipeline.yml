@@ -1,0 +1,38 @@
+name: Automated Running Data Pipeline
+
+on:
+  schedule:
+    - cron: '0 12 * * 1'  # Se ejecuta automáticamente todos los lunes a las 9:00 AM (Hora Argentina)
+  workflow_dispatch:      # Habilita el botón de ejecución manual desde la web
+
+jobs:
+  build-and-analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests matplotlib seaborn
+
+      - name: Ejecutar Pipeline de Análisis
+        env:
+          INTERVALS_ATHLETE_ID: ${{ secrets.INTERVALS_ATHLETE_ID }}
+          INTERVALS_API_KEY: ${{ secrets.INTERVALS_API_KEY }}
+        run: python main.py
+
+      - name: Empaquetar y Subir Artefactos (CSV y Gráficos)
+        uses: actions/upload-artifact@v3
+        with:
+          name: reporte-rendimiento-running
+          path: |
+            reports/
+            running_historico.csv
