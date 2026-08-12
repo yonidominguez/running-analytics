@@ -32,9 +32,9 @@ while True:
     response = requests.get(url_base, auth=HTTPBasicAuth(API_KEY, ""), params=params)
     
     if response.status_code != 200:
-    print(f"⚠️ Error en la página {pagina + 1}: {response.status_code}")
-    print(f"🔍 Detalle del error: {response.text}")  # <--- Nueva línea
-    break
+        print(f"⚠️ Error en la página {pagina + 1}: {response.status_code}")
+        print(f"🔍 Detalle del error: {response.text}")  # <--- NUEVA LÍNEA
+        break
     
     datos_pagina = response.json()
     
