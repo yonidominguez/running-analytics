@@ -11,12 +11,12 @@ jobs:
 
     steps:
       - name: Descargar repositorio
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4  # ACTUALIZADO (Elimina el aviso de Node 20)
 
       - name: Configurar Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5  # ACTUALIZADO (Elimina el aviso de Node 20)
         with:
-          python-version: '3.10'
+          python-version: '3.11'  # Versión más moderna
 
       - name: Instalar dependencias
         run: |
