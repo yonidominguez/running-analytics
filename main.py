@@ -154,7 +154,7 @@ Instrucciones:
 3. Redactá un diagnóstico directo de 3 párrafos. Sin saludos ni frases motivacionales. Solo datos duros y evaluación de readiness.
 """
 
-response = client.models.generate_content(model='gemini-1.5-pro', contents=prompt_maestro)
+response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_maestro)
 
 with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as file:
     file.write(response.text)
