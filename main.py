@@ -1,5 +1,5 @@
 import os
-import time
+import sys
 from datetime import datetime, timedelta
 import pandas as pd
 import requests
@@ -7,7 +7,7 @@ from requests.auth import HTTPBasicAuth
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
-import google.generativeai as genai
+from google import genai  # SDK nuevo
 
 # ==========================================
 # 1. CREDENCIALES Y CONFIGURACIÓN
@@ -37,7 +37,7 @@ df_runs["Distancia_km"] = df_runs["distance"] / 1000.0
 df_runs["Tiempo_min"] = df_runs["moving_time"] / 60.0
 df_runs["Pace_min_km"] = df_runs["Tiempo_min"] / df_runs["Distancia_km"]
 
-# Nuevas métricas para los gráficos completos
+# Nuevas métricas para gráficos
 df_runs["Speed_m_min"] = (df_runs["Distancia_km"] * 1000) / df_runs["Tiempo_min"]
 df_runs["average_heartrate"] = df_runs["average_heartrate"].fillna(0)
 df_runs["EF"] = np.where(df_runs["average_heartrate"] > 0, df_runs["Speed_m_min"] / df_runs["average_heartrate"], np.nan)
@@ -48,7 +48,7 @@ df_runs = df_runs[cols].sort_values("Fecha_dt").reset_index(drop=True)
 df_runs.to_csv("running_historico.csv", index=False)
 
 # ==========================================
-# 3. EXTRACCIÓN DE BIOMETRÍA
+# 3. EXTRACCIÓN DE BIOMETRÍA (WELLNESS)
 # ==========================================
 print("🩺 Extrayendo biometría (HRV, Sueño, RHR)...")
 hace_7_dias = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -58,7 +58,7 @@ res_well = requests.get(url_wellness, auth=HTTPBasicAuth("API_KEY", API_KEY_INTE
 wellness_data = res_well.json() if res_well.status_code == 200 else []
 
 # ==========================================
-# 4. GENERACIÓN DE REPORTES VISUALES
+# 4. GENERACIÓN DE 5 GRÁFICOS
 # ==========================================
 print("📈 Generando 5 gráficos históricos...")
 os.makedirs("reports", exist_ok=True)
@@ -75,7 +75,7 @@ plt.tight_layout()
 plt.savefig("reports/01_volumen_semanal.png", dpi=300)
 plt.close()
 
-# Gráfico 2: Evolución del Pace (Bug de 1970 Corregido)
+# Gráfico 2: Evolución del Pace (corregido)
 fig, ax = plt.subplots(figsize=(10, 5))
 sns.scatterplot(data=df_runs, x="Fecha_dt", y="Pace_min_km", hue="Distancia_km", palette="viridis", size="Distancia_km", sizes=(40, 200), ax=ax, legend=False)
 df_runs_clean = df_runs.dropna(subset=['Pace_min_km'])
@@ -89,7 +89,7 @@ plt.tight_layout()
 plt.savefig("reports/02_evolucion_pace.png", dpi=300)
 plt.close()
 
-# Gráfico 3: Relación Frecuencia Cardíaca vs Ritmo
+# Gráfico 3: Relación FC vs Ritmo
 df_clean_hr = df_runs[df_runs["average_heartrate"] > 0]
 fig, ax = plt.subplots(figsize=(8, 6))
 sns.scatterplot(data=df_clean_hr, x="Pace_min_km", y="average_heartrate", hue="Distancia_km", palette="magma", s=100, ax=ax, legend=False)
@@ -110,7 +110,7 @@ plt.tight_layout()
 plt.savefig("reports/04_ritmo_por_distancia.png", dpi=300)
 plt.close()
 
-# Gráfico 5: Eficiencia Cardiovascular por Rango de Distancia
+# Gráfico 5: Eficiencia Cardiovascular por Distancia
 df_ef_clean = df_runs.dropna(subset=['EF'])
 fig, ax = plt.subplots(figsize=(10, 5))
 sns.boxplot(data=df_ef_clean, x="Rango_Distancia", y="EF", color="coral", ax=ax)
@@ -122,19 +122,18 @@ plt.savefig("reports/05_eficiencia_por_distancia.png", dpi=300)
 plt.close()
 
 # ==========================================
-# 5. INTELIGENCIA DEPORTIVA (GEMINI)
+# 5. INTELIGENCIA DEPORTIVA CON GEMINI (NUEVO SDK)
 # ==========================================
 print("🧠 Procesando Inteligencia Deportiva con Gemini API...")
-genai.configure(api_key=API_KEY_GEMINI)
-model = genai.GenerativeModel('gemini-1.5-pro')
+client = genai.Client(api_key=API_KEY_GEMINI)
 
 runs_semana = df_runs[df_runs["Fecha_dt"] >= (datetime.now() - timedelta(days=7))]
 km_totales = runs_semana["Distancia_km"].sum()
 pace_prom = runs_semana["Pace_min_km"].mean()
 carga_tot = runs_semana["icu_training_load"].sum()
 
-# Función segura para procesar biometría nula sin romper el script
-def safe_sleep(val): return round((val or 0) / 3600, 1)
+def safe_sleep(val):
+    return round((val or 0) / 3600, 1)
 
 bio_text = "\n".join([f"Día {w['id']}: HRV {w.get('hrv', 'N/A')}ms, RHR {w.get('restingHR', 'N/A')}ppm, Sueño {safe_sleep(w.get('sleepSecs'))}hs" for w in wellness_data])
 
@@ -159,9 +158,12 @@ Tus instrucciones:
 2. Redactá un diagnóstico ejecutivo y directo de 3 párrafos. Sin saludos, sin frases motivacionales genéricas. Solo datos, tendencias de asimilación y evaluación de fatiga real de cara al Tapering de los 21K.
 """
 
-response = model.generate_content(prompt_maestro)
+response = client.models.generate_content(
+    model='gemini-1.5-pro',
+    contents=prompt_maestro,
+)
 
-with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as file:
-    file.write(response.text)
+with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as f:
+    f.write(response.text)
 
-print("✅ Pipeline ejecutado con éxito. Archivos e Informe de IA guardados en /reports/")
+print("✅ Pipeline ejecutado con éxito. Todos los archivos guardados en /reports/")
