@@ -52,7 +52,6 @@ url_well = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness?oldest={
 res_well = requests.get(url_well, auth=HTTPBasicAuth("API_KEY", API_KEY_INTERVALS))
 wellness_data = res_well.json() if res_well.status_code == 200 else []
 
-# Extraer métricas de Banister del último día disponible
 latest_well = wellness_data[-1] if wellness_data else {}
 ctl = latest_well.get('ctl', 0)
 atl = latest_well.get('atl', 0)
@@ -78,7 +77,7 @@ def format_xaxis(ax):
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
 
-# Gráfico: Evolución del Pace
+# Gráfico 1: Evolución del Pace
 fig, ax = plt.subplots(figsize=(10, 5))
 sns.scatterplot(data=df_runs, x="Fecha_dt", y="Pace_min_km", hue="Distancia_km", palette="viridis", size="Distancia_km", sizes=(40, 200), ax=ax, legend=False)
 df_runs_clean = df_runs.dropna(subset=['Pace_min_km'])
@@ -93,7 +92,7 @@ plt.tight_layout()
 plt.savefig("reports/01_evolucion_pace.png", dpi=300)
 plt.close()
 
-# Gráfico: Volumen Semanal (Corregido multi-año)
+# Gráfico 2: Volumen Semanal
 df_runs['Semana'] = df_runs['Fecha_dt'].dt.strftime('%G-W%V')
 weekly = df_runs.groupby('Semana')['Distancia_km'].sum().reset_index()
 fig, ax = plt.subplots(figsize=(12, 5))
@@ -105,7 +104,7 @@ plt.tight_layout()
 plt.savefig("reports/02_volumen_semanal.png", dpi=300)
 plt.close()
 
-# Gráfico: Relación Frecuencia Cardíaca vs Ritmo
+# Gráfico 3: Eficiencia Cardiovascular
 df_clean_hr = df_runs[df_runs["average_heartrate"] > 0]
 fig, ax = plt.subplots(figsize=(8, 6))
 sns.scatterplot(data=df_clean_hr, x="Pace_min_km", y="average_heartrate", hue="Distancia_km", palette="magma", s=100, ax=ax, legend=False)
@@ -117,14 +116,19 @@ plt.savefig("reports/03_eficiencia_fc.png", dpi=300)
 plt.close()
 
 # ==========================================
-# 5. INTELIGENCIA DEPORTIVA CON GEMINI
+# 5. INTELIGENCIA DEPORTIVA CON GEMINI (VIA HTTP DIRECTO)
 # ==========================================
 print("🧠 Procesando IA...")
-# Forzamos la API v1 (estable)
-client = genai.Client(
-    api_key=API_KEY_GEMINI,
-    http_options={'api_version': 'v1'}
-)
+
+# Diagnóstico de modelos disponibles en tu cuenta específica
+print("🔍 Diagnosticando modelos disponibles en tu API Key...")
+try:
+    client_diag = genai.Client(api_key=API_KEY_GEMINI)
+    for m in client_diag.models.list():
+        if "gemini" in m.name:
+            print(f" - {m.name}")
+except Exception as e:
+    print(f"⚠️ No se pudieron listar los modelos: {e}")
 
 runs_semana = df_runs[df_runs["Fecha_dt"] >= (datetime.now() - timedelta(days=7))]
 def safe_sleep(val): return round((val or 0) / 3600, 1)
@@ -157,26 +161,43 @@ Instrucciones:
 3. Redactá un diagnóstico directo de 3 párrafos. Sin saludos ni frases motivacionales. Solo datos duros y evaluación de readiness.
 """
 
-modelos = ['gemini-2.5-flash', 'gemini-2.5-flash-8b', 'gemini-1.5-flash-8b']
-response = None
+MODELOS = [
+    "gemini-2.5-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-1.0-pro"
+]
 
-for modelo in modelos:
+analisis = None
+
+for modelo in MODELOS:
+    print(f"🔄 Probando endpoint HTTP directo con {modelo}...")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={API_KEY_GEMINI}"
+    
+    payload = {
+        "contents": [{"parts": [{"text": prompt_maestro}]}]
+    }
+    
     try:
-        print(f"🔄 Intentando con {modelo}...")
-        response = client.models.generate_content(
-            model=modelo,
-            contents=prompt_maestro
-        )
-        print(f"✅ Éxito con {modelo}")
+        resp = requests.post(url, json=payload, timeout=60)
+        
+        if resp.status_code != 200:
+            print(f"⚠️ {modelo} devolvió error HTTP {resp.status_code}: {resp.text[:200]}...")
+            continue
+            
+        data = resp.json()
+        analisis = data["candidates"][0]["content"]["parts"][0]["text"]
+        
+        print(f"✅ Éxito absoluto con {modelo}")
         break
+        
     except Exception as e:
-        print(f"⚠️ Falló {modelo}: {e}")
-        continue
+        print(f"⚠️ Error de conexión con {modelo}: {e}")
 
-if response is None:
-    raise Exception("❌ Todos los modelos fallaron. Revisá tu API Key o la disponibilidad de modelos.")
+if analisis is None:
+    raise Exception("❌ Ningún endpoint HTTP respondió correctamente. Revisá el log de diagnóstico arriba para ver qué modelos tenés habilitados.")
 
 with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as f:
-    f.write(response.text)
+    f.write(analisis)
 
-print("✅ Análisis de IA guardado.")
+print("✅ Análisis guardado exitosamente.")
