@@ -1,16 +1,16 @@
 import os
-import sys
 from datetime import datetime, timedelta
 import pandas as pd
 import requests
 from requests.auth import HTTPBasicAuth
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import seaborn as sns
 import numpy as np
-from google import genai  # SDK nuevo
+from google import genai
 
 # ==========================================
-# 1. CREDENCIALES Y CONFIGURACIÓN
+# 1. CREDENCIALES
 # ==========================================
 ATHLETE_ID = os.environ.get("INTERVALS_ATHLETE_ID")
 API_KEY_INTERVALS = os.environ.get("INTERVALS_API_KEY")
@@ -20,15 +20,12 @@ if not all([ATHLETE_ID, API_KEY_INTERVALS, API_KEY_GEMINI]):
     raise ValueError("Error: Faltan credenciales en los Secrets de GitHub.")
 
 # ==========================================
-# 2. EXTRACCIÓN Y TRANSFORMACIÓN DE DATOS
+# 2. EXTRACCIÓN DE RUNNING (Intervals.icu)
 # ==========================================
-print("🔄 Descargando actividades de Intervals.icu...")
+print("🔄 Descargando actividades...")
 url_acts = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/activities"
 params_acts = {"newest": datetime.now().strftime("%Y-%m-%d"), "oldest": "2024-01-01"}
 res_acts = requests.get(url_acts, auth=HTTPBasicAuth("API_KEY", API_KEY_INTERVALS), params=params_acts)
-
-if res_acts.status_code != 200:
-    raise Exception(f"Error en API Activities: {res_acts.text}")
 
 df_api = pd.DataFrame(res_acts.json())
 df_runs = df_api[df_api["type"] == "Run"].copy()
@@ -36,8 +33,6 @@ df_runs["Fecha_dt"] = pd.to_datetime(df_runs["start_date_local"])
 df_runs["Distancia_km"] = df_runs["distance"] / 1000.0
 df_runs["Tiempo_min"] = df_runs["moving_time"] / 60.0
 df_runs["Pace_min_km"] = df_runs["Tiempo_min"] / df_runs["Distancia_km"]
-
-# Nuevas métricas para gráficos
 df_runs["Speed_m_min"] = (df_runs["Distancia_km"] * 1000) / df_runs["Tiempo_min"]
 df_runs["average_heartrate"] = df_runs["average_heartrate"].fillna(0)
 df_runs["EF"] = np.where(df_runs["average_heartrate"] > 0, df_runs["Speed_m_min"] / df_runs["average_heartrate"], np.nan)
@@ -48,122 +43,118 @@ df_runs = df_runs[cols].sort_values("Fecha_dt").reset_index(drop=True)
 df_runs.to_csv("running_historico.csv", index=False)
 
 # ==========================================
-# 3. EXTRACCIÓN DE BIOMETRÍA (WELLNESS)
+# 3. BIOMETRÍA Y CLIMA (Variables de Contexto)
 # ==========================================
-print("🩺 Extrayendo biometría (HRV, Sueño, RHR)...")
-hace_7_dias = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-hoy = datetime.now().strftime("%Y-%m-%d")
-url_wellness = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness?oldest={hace_7_dias}&newest={hoy}"
-res_well = requests.get(url_wellness, auth=HTTPBasicAuth("API_KEY", API_KEY_INTERVALS))
+print("🩺 Extrayendo biometría y métricas de carga...")
+hace_7_dias_str = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+hoy_str = datetime.now().strftime("%Y-%m-%d")
+url_well = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness?oldest={hace_7_dias_str}&newest={hoy_str}"
+res_well = requests.get(url_well, auth=HTTPBasicAuth("API_KEY", API_KEY_INTERVALS))
 wellness_data = res_well.json() if res_well.status_code == 200 else []
 
+# Extraer métricas de Banister del último día disponible
+latest_well = wellness_data[-1] if wellness_data else {}
+ctl = latest_well.get('ctl', 0)
+atl = latest_well.get('atl', 0)
+tsb = latest_well.get('tsb', 0)
+
+print("🌤️ Consultando clima histórico de Buenos Aires (Open-Meteo)...")
+url_clima = f"https://api.open-meteo.com/v1/forecast?latitude=-34.61&longitude=-58.42&daily=temperature_2m_max,precipitation_sum&past_days=7&forecast_days=1&timezone=America%2FArgentina%2FBuenos_Aires"
+res_clima = requests.get(url_clima)
+clima_txt = "Datos de clima no disponibles."
+if res_clima.status_code == 200:
+    clima_data = res_clima.json().get('daily', {})
+    clima_txt = f"Temp Máx Promedio: {np.mean(clima_data.get('temperature_2m_max', [0])):.1f}°C | Lluvia Total Semanal: {np.sum(clima_data.get('precipitation_sum', [0])):.1f}mm"
+
 # ==========================================
-# 4. GENERACIÓN DE 5 GRÁFICOS
+# 4. GENERACIÓN DE GRÁFICOS (Con Eje X arreglado)
 # ==========================================
-print("📈 Generando 5 gráficos históricos...")
+print("📈 Generando gráficos...")
 os.makedirs("reports", exist_ok=True)
 sns.set_theme(style="whitegrid")
 
-# Gráfico 1: Volumen Semanal
-df_runs['Semana'] = df_runs['Fecha_dt'].dt.isocalendar().week
-weekly = df_runs.groupby('Semana')['Distancia_km'].sum().reset_index()
-fig, ax = plt.subplots(figsize=(10, 5))
-sns.barplot(data=weekly, x="Semana", y="Distancia_km", color="steelblue", ax=ax)
-ax.set_ylabel("Kilómetros Totales")
-ax.set_title("Volumen Semanal Acumulado (km)", fontweight="bold")
-plt.tight_layout()
-plt.savefig("reports/01_volumen_semanal.png", dpi=300)
-plt.close()
+# Formateador de fechas para evitar la "mancha negra"
+def format_xaxis(ax):
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2)) # Saltos de 2 meses (Bimestre)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
 
-# Gráfico 2: Evolución del Pace (corregido)
+# Gráfico: Evolución del Pace
 fig, ax = plt.subplots(figsize=(10, 5))
 sns.scatterplot(data=df_runs, x="Fecha_dt", y="Pace_min_km", hue="Distancia_km", palette="viridis", size="Distancia_km", sizes=(40, 200), ax=ax, legend=False)
 df_runs_clean = df_runs.dropna(subset=['Pace_min_km'])
-df_runs_clean["Fecha_ordinal"] = df_runs_clean["Fecha_dt"].apply(lambda x: x.toordinal())
-tendencia = np.poly1d(np.polyfit(df_runs_clean["Fecha_ordinal"], df_runs_clean["Pace_min_km"], 1))
-ax.plot(df_runs_clean["Fecha_dt"], tendencia(df_runs_clean["Fecha_ordinal"]), color="red", linestyle="--", linewidth=2)
+x_nums = mdates.date2num(df_runs_clean["Fecha_dt"]) # Conversión matemática estricta para la tendencia
+tendencia = np.poly1d(np.polyfit(x_nums, df_runs_clean["Pace_min_km"], 1))
+ax.plot(df_runs_clean["Fecha_dt"], tendencia(x_nums), color="red", linestyle="--", linewidth=2)
+format_xaxis(ax)
 ax.set_ylabel("Ritmo (min/km)")
 ax.set_xlabel("Fecha")
 ax.set_title("Evolución del Ritmo de Carrera y Tendencia", fontweight="bold")
 plt.tight_layout()
-plt.savefig("reports/02_evolucion_pace.png", dpi=300)
+plt.savefig("reports/01_evolucion_pace.png", dpi=300)
 plt.close()
 
-# Gráfico 3: Relación FC vs Ritmo
+# Gráfico: Volumen Semanal (Corregido para multi-año)
+df_runs['Semana'] = df_runs['Fecha_dt'].dt.strftime('%G-W%V') # Formato: 2024-W01, 2025-W01
+weekly = df_runs.groupby('Semana')['Distancia_km'].sum().reset_index()
+fig, ax = plt.subplots(figsize=(12, 5))
+sns.barplot(data=weekly, x="Semana", y="Distancia_km", color="steelblue", ax=ax)
+plt.setp(ax.get_xticklabels(), rotation=90, fontsize=8) # Rota el texto 90 grados para que sea legible
+ax.set_ylabel("Kilómetros Totales")
+ax.set_title("Volumen Semanal Acumulado (km)", fontweight="bold")
+plt.tight_layout()
+plt.savefig("reports/02_volumen_semanal.png", dpi=300)
+plt.close()
+
+# Gráfico: Relación Frecuencia Cardíaca vs Ritmo
 df_clean_hr = df_runs[df_runs["average_heartrate"] > 0]
 fig, ax = plt.subplots(figsize=(8, 6))
 sns.scatterplot(data=df_clean_hr, x="Pace_min_km", y="average_heartrate", hue="Distancia_km", palette="magma", s=100, ax=ax, legend=False)
 ax.set_xlabel("Ritmo (min/km)")
 ax.set_ylabel("Frecuencia Cardíaca Media (ppm)")
-ax.set_title("Relación Frecuencia Cardíaca vs. Ritmo", fontweight="bold")
+ax.set_title("Eficiencia Cardiovascular Absoluta", fontweight="bold")
 plt.tight_layout()
-plt.savefig("reports/03_eficiencia_fc_ritmo.png", dpi=300)
-plt.close()
-
-# Gráfico 4: Consistencia del Ritmo por Distancia
-fig, ax = plt.subplots(figsize=(10, 5))
-sns.boxplot(data=df_runs, x="Rango_Distancia", y="Pace_min_km", color="lightseagreen", ax=ax)
-ax.set_ylabel("Ritmo (min/km)")
-ax.set_xlabel("Distancia (km)")
-ax.set_title("Consistencia del Ritmo por Distancia", fontweight="bold")
-plt.tight_layout()
-plt.savefig("reports/04_ritmo_por_distancia.png", dpi=300)
-plt.close()
-
-# Gráfico 5: Eficiencia Cardiovascular por Distancia
-df_ef_clean = df_runs.dropna(subset=['EF'])
-fig, ax = plt.subplots(figsize=(10, 5))
-sns.boxplot(data=df_ef_clean, x="Rango_Distancia", y="EF", color="coral", ax=ax)
-ax.set_ylabel("Eficiencia (m/min / ppm)")
-ax.set_xlabel("Distancia (km)")
-ax.set_title("Eficiencia Cardiovascular por Rango de Distancia", fontweight="bold")
-plt.tight_layout()
-plt.savefig("reports/05_eficiencia_por_distancia.png", dpi=300)
+plt.savefig("reports/03_eficiencia_fc.png", dpi=300)
 plt.close()
 
 # ==========================================
-# 5. INTELIGENCIA DEPORTIVA CON GEMINI (NUEVO SDK)
+# 5. INTELIGENCIA DEPORTIVA CON GEMINI (Súper Prompt)
 # ==========================================
-print("🧠 Procesando Inteligencia Deportiva con Gemini API...")
+print("🧠 Procesando IA...")
 client = genai.Client(api_key=API_KEY_GEMINI)
 
 runs_semana = df_runs[df_runs["Fecha_dt"] >= (datetime.now() - timedelta(days=7))]
-km_totales = runs_semana["Distancia_km"].sum()
-pace_prom = runs_semana["Pace_min_km"].mean()
-carga_tot = runs_semana["icu_training_load"].sum()
-
-def safe_sleep(val):
-    return round((val or 0) / 3600, 1)
-
+def safe_sleep(val): return round((val or 0) / 3600, 1)
 bio_text = "\n".join([f"Día {w['id']}: HRV {w.get('hrv', 'N/A')}ms, RHR {w.get('restingHR', 'N/A')}ppm, Sueño {safe_sleep(w.get('sleepSecs'))}hs" for w in wellness_data])
 
 prompt_maestro = f"""
-Actuás como mi Analista de Datos de Rendimiento Deportivo. Mi entrenador principal (Marcos) ya se encarga de la planificación estratégica, por lo que tu rol es puramente analítico.
+Actuás como mi Analista de Datos de Rendimiento Deportivo. Mi entrenador (Marcos) planifica la estrategia; tu rol es puramente analítico.
 
-Contexto vital del atleta:
-- Mi semana incluye jornadas nocturnas de cursada universitaria (Maestría en Negocios y Tecnología), por lo que mis horas de sueño serán estructuralmente bajas en ciertos días. 
-- Bajo ninguna circunstancia generes alertas alarmistas sobre la falta de horas de sueño a menos que vengan acompañadas de un desplome de la Variabilidad de la Frecuencia Cardíaca (HRV) y un pico en la Frecuencia Cardíaca en Reposo (RHR).
-- Me encuentro a escasos días de la Media Maratón de Buenos Aires (23 de agosto).
+Contexto vital:
+- Mis horas de sueño son estructuralmente bajas algunos días debido a cursada universitaria nocturna. No generes alertas alarmistas por falta de sueño a menos que haya un desplome del HRV o pico de RHR.
+- Me encuentro en Tapering para la Media Maratón de Buenos Aires (23 de agosto).
 
-Mis datos de los últimos 7 días:
-- Kilómetros recorridos: {km_totales:.2f} km
-- Ritmo promedio global: {pace_prom:.2f} min/km
-- Carga de entrenamiento (TSS): {carga_tot:.0f}
+Datos de carga actuales (Modelo Banister):
+- CTL (Fitness acumulado): {ctl:.1f}
+- ATL (Fatiga reciente): {atl:.1f}
+- TSB (Forma actual): {tsb:.1f}
 
-Biometría diaria registrada (Intervals.icu):
+Datos de la última semana:
+- Kilómetros recorridos: {runs_semana["Distancia_km"].sum():.2f} km
+- Ritmo promedio: {runs_semana["Pace_min_km"].mean():.2f} min/km
+- Carga de entrenamiento (TSS): {runs_semana["icu_training_load"].sum():.0f}
+- Clima registrado: {clima_txt}
+
+Biometría diaria:
 {bio_text}
 
-Tus instrucciones:
-1. Evaluá si mi sistema nervioso asimiló la carga observando la tendencia de mi HRV y RHR de los últimos días, asumiendo que el sueño corto es por estudio y no por insomnio clínico.
-2. Redactá un diagnóstico ejecutivo y directo de 3 párrafos. Sin saludos, sin frases motivacionales genéricas. Solo datos, tendencias de asimilación y evaluación de fatiga real de cara al Tapering de los 21K.
+Instrucciones:
+1. Evaluá la asimilación de la carga cruzando el TSB con mi HRV/RHR, entendiendo que el TSB debe empezar a positivizarse por el Tapering.
+2. Considerá el impacto del clima en mi fatiga reciente.
+3. Redactá un diagnóstico directo de 3 párrafos. Sin saludos ni frases motivacionales. Solo datos duros y evaluación de readiness.
 """
 
-response = client.models.generate_content(
-    model='gemini-3.6-flash',
-    contents=prompt_maestro,
-)
+response = client.models.generate_content(model='gemini-1.5-pro', contents=prompt_maestro)
 
-with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as f:
-    f.write(response.text)
-
-print("✅ Pipeline ejecutado con éxito. Todos los archivos guardados en /reports/")
+with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as file:
+    file.write(response.text)
