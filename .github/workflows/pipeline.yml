@@ -3,7 +3,7 @@ name: Automated Running Data Pipeline
 on:
   schedule:
     - cron: '0 2 * * 1'  # Lunes 2:00 UTC = Domingo 23:00 ART
-  workflow_dispatch:      # Para ejecución manual
+  workflow_dispatch:
 
 jobs:
   build-and-analyze:
@@ -11,12 +11,12 @@ jobs:
 
     steps:
       - name: Descargar repositorio
-        uses: actions/checkout@v4  # ACTUALIZADO (Elimina el aviso de Node 20)
+        uses: actions/checkout@v4
 
       - name: Configurar Python
-        uses: actions/setup-python@v5  # ACTUALIZADO (Elimina el aviso de Node 20)
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'  # Versión más moderna
+          python-version: '3.11'
 
       - name: Instalar dependencias
         run: |
@@ -30,7 +30,47 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python main.py
 
-      - name: Empaquetar y Subir Artefactos (CSV y Gráficos)
+      - name: Lógica de Frecuencia Mensual
+        id: check_date
+        run: |
+          DAY=$(date +%d)
+          if [ "$DAY" -le 7 ]; then
+            echo "send_graphs=true" >> $GITHUB_ENV
+          else
+            echo "send_graphs=false" >> $GITHUB_ENV
+          fi
+
+      - name: Enviar Reporte COMPLETO (Gráficos + IA) - 1ra Semana
+        if: env.send_graphs == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: 📊 Reporte Mensual de Running + Análisis IA
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: GitHub Actions Runner
+          body: "Adjunto los 5 gráficos de rendimiento histórico y el análisis de la última semana."
+          attachments: reports/*
+
+      - name: Enviar Reporte SOLO TEXTO (IA) - Resto del mes
+        if: env.send_graphs == 'false'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: 🤖 Análisis Semanal de Rendimiento y Fatiga
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: GitHub Actions Runner
+          body: "Adjunto el análisis fisiológico de Gemini de los últimos 7 días."
+          attachments: reports/00_Analisis_Inteligencia_Deportiva.txt
+
+      - name: Empaquetar y Subir Artefactos al Repo (Backup)
         uses: actions/upload-artifact@v4
         with:
           name: reporte-rendimiento-running
