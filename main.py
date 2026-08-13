@@ -158,8 +158,9 @@ Tus instrucciones:
 2. Redactá un diagnóstico ejecutivo y directo de 3 párrafos. Sin saludos, sin frases motivacionales genéricas. Solo datos, tendencias de asimilación y evaluación de fatiga real de cara al Tapering de los 21K.
 """
 
+# CAMBIO CLAVE: uso 'gemini-2.0-flash' en lugar de 'gemini-1.5-pro'
 response = client.models.generate_content(
-    model='gemini-1.5-pro',
+    model='gemini-2.0-flash',
     contents=prompt_maestro,
 )
 
