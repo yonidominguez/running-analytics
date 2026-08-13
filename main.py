@@ -67,15 +67,14 @@ if res_clima.status_code == 200:
     clima_txt = f"Temp Máx Promedio: {np.mean(clima_data.get('temperature_2m_max', [0])):.1f}°C | Lluvia Total Semanal: {np.sum(clima_data.get('precipitation_sum', [0])):.1f}mm"
 
 # ==========================================
-# 4. GENERACIÓN DE GRÁFICOS (Con Eje X arreglado)
+# 4. GENERACIÓN DE GRÁFICOS
 # ==========================================
 print("📈 Generando gráficos...")
 os.makedirs("reports", exist_ok=True)
 sns.set_theme(style="whitegrid")
 
-# Formateador de fechas para evitar la "mancha negra"
 def format_xaxis(ax):
-    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2)) # Saltos de 2 meses (Bimestre)
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
 
@@ -83,7 +82,7 @@ def format_xaxis(ax):
 fig, ax = plt.subplots(figsize=(10, 5))
 sns.scatterplot(data=df_runs, x="Fecha_dt", y="Pace_min_km", hue="Distancia_km", palette="viridis", size="Distancia_km", sizes=(40, 200), ax=ax, legend=False)
 df_runs_clean = df_runs.dropna(subset=['Pace_min_km'])
-x_nums = mdates.date2num(df_runs_clean["Fecha_dt"]) # Conversión matemática estricta para la tendencia
+x_nums = mdates.date2num(df_runs_clean["Fecha_dt"])
 tendencia = np.poly1d(np.polyfit(x_nums, df_runs_clean["Pace_min_km"], 1))
 ax.plot(df_runs_clean["Fecha_dt"], tendencia(x_nums), color="red", linestyle="--", linewidth=2)
 format_xaxis(ax)
@@ -94,12 +93,12 @@ plt.tight_layout()
 plt.savefig("reports/01_evolucion_pace.png", dpi=300)
 plt.close()
 
-# Gráfico: Volumen Semanal (Corregido para multi-año)
-df_runs['Semana'] = df_runs['Fecha_dt'].dt.strftime('%G-W%V') # Formato: 2024-W01, 2025-W01
+# Gráfico: Volumen Semanal (Corregido multi-año)
+df_runs['Semana'] = df_runs['Fecha_dt'].dt.strftime('%G-W%V')
 weekly = df_runs.groupby('Semana')['Distancia_km'].sum().reset_index()
 fig, ax = plt.subplots(figsize=(12, 5))
 sns.barplot(data=weekly, x="Semana", y="Distancia_km", color="steelblue", ax=ax)
-plt.setp(ax.get_xticklabels(), rotation=90, fontsize=8) # Rota el texto 90 grados para que sea legible
+plt.setp(ax.get_xticklabels(), rotation=90, fontsize=8)
 ax.set_ylabel("Kilómetros Totales")
 ax.set_title("Volumen Semanal Acumulado (km)", fontweight="bold")
 plt.tight_layout()
@@ -121,7 +120,11 @@ plt.close()
 # 5. INTELIGENCIA DEPORTIVA CON GEMINI (Súper Prompt)
 # ==========================================
 print("🧠 Procesando IA...")
-client = genai.Client(api_key=API_KEY_GEMINI)
+# Forzamos la API v1 (estable)
+client = genai.Client(
+    api_key=API_KEY_GEMINI,
+    http_options={'api_version': 'v1'}
+)
 
 runs_semana = df_runs[df_runs["Fecha_dt"] >= (datetime.now() - timedelta(days=7))]
 def safe_sleep(val): return round((val or 0) / 3600, 1)
@@ -154,7 +157,20 @@ Instrucciones:
 3. Redactá un diagnóstico directo de 3 párrafos. Sin saludos ni frases motivacionales. Solo datos duros y evaluación de readiness.
 """
 
-response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt_maestro)
+try:
+    print("Intentando conectar con gemini-2.0-flash...")
+    response = client.models.generate_content(
+        model='gemini-2.0-flash', 
+        contents=prompt_maestro
+    )
+except Exception as e:
+    print(f"⚠️ Error con 2.0-flash ({e}). Ejecutando fallback a 1.5-flash...")
+    response = client.models.generate_content(
+        model='gemini-1.5-flash', 
+        contents=prompt_maestro
+    )
 
 with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as file:
     file.write(response.text)
+
+print("✅ Pipeline de IA ejecutado con éxito.")
