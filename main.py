@@ -4,6 +4,8 @@ from datetime import datetime
 import pandas as pd
 import requests
 from requests.auth import HTTPBasicAuth
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 
