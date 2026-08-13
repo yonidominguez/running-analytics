@@ -2,8 +2,8 @@ name: Automated Running Data Pipeline
 
 on:
   schedule:
-    - cron: '0 2 * * 1'
-  workflow_dispatch:
+    - cron: '0 2 * * 1'  # Lunes 2:00 UTC = Domingo 23:00 ART
+  workflow_dispatch:      # Para ejecución manual
 
 jobs:
   build-and-analyze:
@@ -21,7 +21,7 @@ jobs:
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests matplotlib seaborn google-generativeai
+          pip install pandas requests matplotlib seaborn google-genai
 
       - name: Ejecutar Pipeline de Análisis
         env:
@@ -30,7 +30,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python main.py
 
-      - name: Empaquetar y Subir Artefactos (CSV, Gráficos y Reporte IA)
+      - name: Empaquetar y Subir Artefactos (CSV y Gráficos)
         uses: actions/upload-artifact@v4
         with:
           name: reporte-rendimiento-running
