@@ -1,4 +1,5 @@
 import os
+import sys
 from datetime import datetime, timedelta
 import pandas as pd
 import requests
@@ -20,12 +21,15 @@ if not all([ATHLETE_ID, API_KEY_INTERVALS, API_KEY_GEMINI]):
     raise ValueError("Error: Faltan credenciales en los Secrets de GitHub.")
 
 # ==========================================
-# 2. EXTRACCIÓN DE RUNNING (Intervals.icu)
+# 2. EXTRACCIÓN DE ACTIVIDADES (Intervals.icu)
 # ==========================================
 print("🔄 Descargando actividades...")
 url_acts = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/activities"
 params_acts = {"newest": datetime.now().strftime("%Y-%m-%d"), "oldest": "2024-01-01"}
 res_acts = requests.get(url_acts, auth=HTTPBasicAuth("API_KEY", API_KEY_INTERVALS), params=params_acts)
+
+if res_acts.status_code != 200:
+    raise Exception(f"Error en API de actividades: {res_acts.text}")
 
 df_api = pd.DataFrame(res_acts.json())
 df_runs = df_api[df_api["type"] == "Run"].copy()
@@ -43,7 +47,7 @@ df_runs = df_runs[cols].sort_values("Fecha_dt").reset_index(drop=True)
 df_runs.to_csv("running_historico.csv", index=False)
 
 # ==========================================
-# 3. BIOMETRÍA Y CLIMA (Variables de Contexto)
+# 3. BIOMETRÍA Y CLIMA (Contexto)
 # ==========================================
 print("🩺 Extrayendo biometría y métricas de carga...")
 hace_7_dias_str = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -63,7 +67,9 @@ res_clima = requests.get(url_clima)
 clima_txt = "Datos de clima no disponibles."
 if res_clima.status_code == 200:
     clima_data = res_clima.json().get('daily', {})
-    clima_txt = f"Temp Máx Promedio: {np.mean(clima_data.get('temperature_2m_max', [0])):.1f}°C | Lluvia Total Semanal: {np.sum(clima_data.get('precipitation_sum', [0])):.1f}mm"
+    temp_prom = np.mean(clima_data.get('temperature_2m_max', [0]))
+    lluvia_total = np.sum(clima_data.get('precipitation_sum', [0]))
+    clima_txt = f"Temp Máx Promedio: {temp_prom:.1f}°C | Lluvia Total Semanal: {lluvia_total:.1f}mm"
 
 # ==========================================
 # 4. GENERACIÓN DE GRÁFICOS
@@ -116,88 +122,103 @@ plt.savefig("reports/03_eficiencia_fc.png", dpi=300)
 plt.close()
 
 # ==========================================
-# 5. INTELIGENCIA DEPORTIVA CON GEMINI (VIA HTTP DIRECTO)
+# 5. INTELIGENCIA DEPORTIVA (Gemini Interactions API)
 # ==========================================
-print("🧠 Procesando IA...")
+print("🧠 Procesando IA con Gemini Interactions API...")
 
-# Diagnóstico de modelos disponibles en tu cuenta específica
-print("🔍 Diagnosticando modelos disponibles en tu API Key...")
-try:
-    client_diag = genai.Client(api_key=API_KEY_GEMINI)
-    for m in client_diag.models.list():
-        if "gemini" in m.name:
-            print(f" - {m.name}")
-except Exception as e:
-    print(f"⚠️ No se pudieron listar los modelos: {e}")
+def generar_analisis_gemini(client, prompt, modelos=None):
+    """
+    Encapsula la llamada a Gemini usando Interactions API.
+    Retorna (texto_analisis, modelo_usado) o lanza RuntimeError.
+    """
+    if modelos is None:
+        modelos = ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
 
+    errores = []
+    for modelo in modelos:
+        try:
+            print(f"🔄 Probando Interactions API con {modelo}...")
+            interaction = client.interactions.create(
+                model=modelo,
+                input=prompt,
+                store=False
+            )
+            texto = interaction.output_text
+            if texto and texto.strip():
+                print(f"✅ Análisis generado con {modelo}")
+                return texto.strip(), modelo
+            else:
+                errores.append(f"{modelo}: respuesta vacía")
+        except Exception as e:
+            errores.append(f"{modelo}: {type(e).__name__}: {e}")
+            print(f"⚠️ Falló {modelo}")
+
+    raise RuntimeError(
+        "❌ Fallaron todos los modelos.\n" + "\n".join(errores)
+    )
+
+# Preparar datos para el prompt
 runs_semana = df_runs[df_runs["Fecha_dt"] >= (datetime.now() - timedelta(days=7))]
-def safe_sleep(val): return round((val or 0) / 3600, 1)
-bio_text = "\n".join([f"Día {w['id']}: HRV {w.get('hrv', 'N/A')}ms, RHR {w.get('restingHR', 'N/A')}ppm, Sueño {safe_sleep(w.get('sleepSecs'))}hs" for w in wellness_data])
+km_semana = runs_semana["Distancia_km"].sum()
+ritmo_semana = runs_semana["Pace_min_km"].mean()
+tss_semana = runs_semana["icu_training_load"].sum()
+
+def safe_sleep(val):
+    return round((val or 0) / 3600, 1)
+
+bio_text = "\n".join([
+    f"Día {w.get('id', 'N/A')}: HRV {w.get('hrv', 'N/A')}ms, RHR {w.get('restingHR', 'N/A')}ppm, Sueño {safe_sleep(w.get('sleepSecs'))}hs"
+    for w in wellness_data
+]) or "No hay datos biométricos disponibles para esta semana."
+
+ritmo_txt = f"{ritmo_semana:.2f} min/km" if pd.notna(ritmo_semana) else "No disponible"
 
 prompt_maestro = f"""
 Actuás como mi Analista de Datos de Rendimiento Deportivo. Mi entrenador (Marcos) planifica la estrategia; tu rol es puramente analítico.
 
 Contexto vital:
 - Mis horas de sueño son estructuralmente bajas algunos días debido a cursada universitaria nocturna. No generes alertas alarmistas por falta de sueño a menos que haya un desplome del HRV o pico de RHR.
-- Me encuentro en Tapering para la Media Maratón de Buenos Aires (23 de agosto).
+- Me encuentro en tapering para la Media Maratón de Buenos Aires del 23 de agosto.
 
 Datos de carga actuales (Modelo Banister):
-- CTL (Fitness acumulado): {ctl:.1f}
-- ATL (Fatiga reciente): {atl:.1f}
-- TSB (Forma actual): {tsb:.1f}
+- CTL (fitness acumulado): {ctl:.1f}
+- ATL (fatiga reciente): {atl:.1f}
+- TSB (forma actual): {tsb:.1f}
 
 Datos de la última semana:
-- Kilómetros recorridos: {runs_semana["Distancia_km"].sum():.2f} km
-- Ritmo promedio: {runs_semana["Pace_min_km"].mean():.2f} min/km
-- Carga de entrenamiento (TSS): {runs_semana["icu_training_load"].sum():.0f}
+- Kilómetros recorridos: {km_semana:.2f} km
+- Ritmo promedio: {ritmo_txt}
+- Carga de entrenamiento (TSS): {tss_semana:.0f}
 - Clima registrado: {clima_txt}
 
 Biometría diaria:
 {bio_text}
 
 Instrucciones:
-1. Evaluá la asimilación de la carga cruzando el TSB con mi HRV/RHR, entendiendo que el TSB debe empezar a positivizarse por el Tapering.
-2. Considerá el impacto del clima en mi fatiga reciente.
-3. Redactá un diagnóstico directo de 3 párrafos. Sin saludos ni frases motivacionales. Solo datos duros y evaluación de readiness.
+1. Evaluá la asimilación de la carga cruzando el TSB con HRV y RHR, entendiendo que el TSB debería empezar a positivizarse durante el tapering.
+2. Considerá el posible impacto del clima en la fatiga reciente.
+3. No diagnostiques enfermedades ni reemplaces una evaluación médica.
+4. Si faltan datos o no permiten establecer una tendencia, indicá explícitamente esa limitación.
+5. Redactá un análisis directo de exactamente 3 párrafos.
+6. No incluyas saludos, frases motivacionales, títulos ni listas.
+7. Limitate al análisis de los datos y a la evaluación de readiness.
 """
 
-MODELOS = [
-    "gemini-2.5-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-1.0-pro"
-]
+# Ejecutar análisis
+client = genai.Client(api_key=API_KEY_GEMINI)
+try:
+    analisis, modelo_usado = generar_analisis_gemini(client, prompt_maestro)
+except RuntimeError as e:
+    # En caso de error, guardamos el traceback en el archivo de salida
+    with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as f:
+        f.write(f"Error en el análisis de IA:\n{str(e)}")
+    print(f"❌ Error: {e}")
+    sys.exit(1)
 
-analisis = None
+# Guardar el análisis
+ruta_reporte = "reports/00_Analisis_Inteligencia_Deportiva.txt"
+with open(ruta_reporte, "w", encoding="utf-8") as f:
+    f.write(analisis + "\n")
+print(f"✅ Análisis guardado en {ruta_reporte} (modelo: {modelo_usado})")
 
-for modelo in MODELOS:
-    print(f"🔄 Probando endpoint HTTP directo con {modelo}...")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={API_KEY_GEMINI}"
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt_maestro}]}]
-    }
-    
-    try:
-        resp = requests.post(url, json=payload, timeout=60)
-        
-        if resp.status_code != 200:
-            print(f"⚠️ {modelo} devolvió error HTTP {resp.status_code}: {resp.text[:200]}...")
-            continue
-            
-        data = resp.json()
-        analisis = data["candidates"][0]["content"]["parts"][0]["text"]
-        
-        print(f"✅ Éxito absoluto con {modelo}")
-        break
-        
-    except Exception as e:
-        print(f"⚠️ Error de conexión con {modelo}: {e}")
-
-if analisis is None:
-    raise Exception("❌ Ningún endpoint HTTP respondió correctamente. Revisá el log de diagnóstico arriba para ver qué modelos tenés habilitados.")
-
-with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as f:
-    f.write(analisis)
-
-print("✅ Análisis guardado exitosamente.")
+print("✅ Pipeline completado con éxito.")
