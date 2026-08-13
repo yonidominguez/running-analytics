@@ -38,26 +38,48 @@ if not data:
     print("❌ No se encontraron actividades.")
     sys.exit(1)
 
+# --- DEPURACIÓN: Mostrar las primeras claves del primer elemento ---
+print("🔍 Primer elemento del JSON (claves):", list(data[0].keys()) if data else "No hay datos")
+
 # 3. Procesamiento de datos
+print("📊 Creando DataFrame...")
 df_api = pd.DataFrame(data)
+print(f"   ✅ DataFrame creado con {len(df_api)} filas y {len(df_api.columns)} columnas.")
+
+print("🔍 Columnas disponibles:", list(df_api.columns))
+
+# Filtrar actividades de running
+print("🏃 Filtrando por tipo 'Run'...")
 df_runs = df_api[df_api["type"] == "Run"].copy()
+print(f"   ✅ Actividades de running encontradas: {len(df_runs)}")
 
 if df_runs.empty:
     print("❌ No se encontraron actividades de running.")
     sys.exit(1)
 
+# Transformaciones
+print("🔄 Transformando métricas...")
 df_runs["Fecha_dt"] = pd.to_datetime(df_runs["start_date_local"])
 df_runs["Distancia_km"] = df_runs["distance"] / 1000.0
 df_runs["Tiempo_min"] = df_runs["moving_time"] / 60.0
 df_runs["Pace_min_km"] = df_runs["Tiempo_min"] / df_runs["Distancia_km"]
+print("   ✅ Transformaciones completadas.")
 
+# Seleccionar columnas
 cols = ["id", "Fecha_dt", "name", "Distancia_km", "Tiempo_min", "Pace_min_km", "average_heartrate", "icu_training_load"]
-df_runs = df_runs[cols].sort_values("Fecha_dt").reset_index(drop=True)
+print("🔍 Columnas disponibles después de transformar:", list(df_runs.columns))
+# Filtrar columnas existentes (por si alguna no está)
+cols_existentes = [col for col in cols if col in df_runs.columns]
+print(f"🔍 Columnas a guardar: {cols_existentes}")
+df_runs = df_runs[cols_existentes].sort_values("Fecha_dt").reset_index(drop=True)
 
-print(f"🏃‍♂️ Carreras de running encontradas: {len(df_runs)}")
+print(f"🏃‍♂️ Carreras de running procesadas: {len(df_runs)}")
+print("💾 Guardando CSV...")
 df_runs.to_csv("running_historico.csv", index=False)
+print("   ✅ CSV guardado.")
 
 # 4. Generación de gráficos
+print("📈 Generando gráficos...")
 os.makedirs("reports", exist_ok=True)
 sns.set_theme(style="whitegrid")
 
@@ -88,16 +110,17 @@ plt.tight_layout()
 plt.savefig("reports/02_volumen_semanal.png", dpi=300)
 plt.close()
 
-# Gráfico 3: Eficiencia Cardiovascular
-df_clean_hr = df_runs[df_runs["average_heartrate"] > 0]
-if not df_clean_hr.empty:
-    fig, ax = plt.subplots(figsize=(8, 6))
-    sns.scatterplot(data=df_clean_hr, x="Pace_min_km", y="average_heartrate", hue="Distancia_km", palette="magma", s=100, ax=ax)
-    ax.set_xlabel("Ritmo (min/km)")
-    ax.set_ylabel("Frecuencia Cardíaca Media (ppm)")
-    ax.set_title("Relación Frecuencia Cardíaca vs. Ritmo", fontweight="bold")
-    plt.tight_layout()
-    plt.savefig("reports/03_eficiencia_fc_ritmo.png", dpi=300)
-    plt.close()
+# Gráfico 3: Eficiencia Cardiovascular (solo si existe la columna)
+if "average_heartrate" in df_runs.columns:
+    df_clean_hr = df_runs[df_runs["average_heartrate"] > 0]
+    if not df_clean_hr.empty:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        sns.scatterplot(data=df_clean_hr, x="Pace_min_km", y="average_heartrate", hue="Distancia_km", palette="magma", s=100, ax=ax)
+        ax.set_xlabel("Ritmo (min/km)")
+        ax.set_ylabel("Frecuencia Cardíaca Media (ppm)")
+        ax.set_title("Relación Frecuencia Cardíaca vs. Ritmo", fontweight="bold")
+        plt.tight_layout()
+        plt.savefig("reports/03_eficiencia_fc_ritmo.png", dpi=300)
+        plt.close()
 
 print("✅ Procesamiento completado. Revisá la carpeta 'reports' para ver los gráficos.")
