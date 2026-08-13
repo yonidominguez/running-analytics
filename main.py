@@ -40,17 +40,15 @@ if not data:
     print("❌ No se encontraron actividades.")
     sys.exit(1)
 
-# --- DEPURACIÓN: Mostrar las primeras claves del primer elemento ---
+# --- DEPURACIÓN ---
 print("🔍 Primer elemento del JSON (claves):", list(data[0].keys()) if data else "No hay datos")
 
 # 3. Procesamiento de datos
 print("📊 Creando DataFrame...")
 df_api = pd.DataFrame(data)
 print(f"   ✅ DataFrame creado con {len(df_api)} filas y {len(df_api.columns)} columnas.")
-
 print("🔍 Columnas disponibles:", list(df_api.columns))
 
-# Filtrar actividades de running
 print("🏃 Filtrando por tipo 'Run'...")
 df_runs = df_api[df_api["type"] == "Run"].copy()
 print(f"   ✅ Actividades de running encontradas: {len(df_runs)}")
@@ -67,10 +65,8 @@ df_runs["Tiempo_min"] = df_runs["moving_time"] / 60.0
 df_runs["Pace_min_km"] = df_runs["Tiempo_min"] / df_runs["Distancia_km"]
 print("   ✅ Transformaciones completadas.")
 
-# Seleccionar columnas
 cols = ["id", "Fecha_dt", "name", "Distancia_km", "Tiempo_min", "Pace_min_km", "average_heartrate", "icu_training_load"]
 print("🔍 Columnas disponibles después de transformar:", list(df_runs.columns))
-# Filtrar columnas existentes (por si alguna no está)
 cols_existentes = [col for col in cols if col in df_runs.columns]
 print(f"🔍 Columnas a guardar: {cols_existentes}")
 df_runs = df_runs[cols_existentes].sort_values("Fecha_dt").reset_index(drop=True)
@@ -85,10 +81,14 @@ print("📈 Generando gráficos...")
 os.makedirs("reports", exist_ok=True)
 sns.set_theme(style="whitegrid")
 
+# --- CORRECCIÓN APLICADA AQUÍ ---
+# Convertir fecha a número de días desde el inicio para la regresión
+df_runs["Fecha_num"] = (df_runs["Fecha_dt"] - df_runs["Fecha_dt"].min()).dt.days
+
 # Gráfico 1: Evolución del Pace
 fig, ax = plt.subplots(figsize=(10, 5))
 sns.scatterplot(data=df_runs, x="Fecha_dt", y="Pace_min_km", hue="Distancia_km", palette="viridis", size="Distancia_km", sizes=(40, 200), ax=ax)
-sns.regplot(data=df_runs, x=df_runs["Fecha_dt"], y="Pace_min_km", scatter=False, ax=ax, color="red", line_kws={"linestyle": "--"})
+sns.regplot(data=df_runs, x="Fecha_num", y="Pace_min_km", scatter=False, ax=ax, color="red", line_kws={"linestyle": "--"})
 ax.set_ylabel("Ritmo (min/km)")
 ax.set_xlabel("Fecha")
 ax.set_title("Evolución del Ritmo de Carrera y Tendencia", fontweight="bold")
@@ -112,7 +112,7 @@ plt.tight_layout()
 plt.savefig("reports/02_volumen_semanal.png", dpi=300)
 plt.close()
 
-# Gráfico 3: Eficiencia Cardiovascular (solo si existe la columna)
+# Gráfico 3: Eficiencia Cardiovascular
 if "average_heartrate" in df_runs.columns:
     df_clean_hr = df_runs[df_runs["average_heartrate"] > 0]
     if not df_clean_hr.empty:
