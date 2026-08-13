@@ -133,7 +133,10 @@ km_totales = runs_semana["Distancia_km"].sum()
 pace_prom = runs_semana["Pace_min_km"].mean()
 carga_tot = runs_semana["icu_training_load"].sum()
 
-bio_text = "\n".join([f"Día {w['id']}: HRV {w.get('hrv', 'N/A')}ms, RHR {w.get('restingHR', 'N/A')}ppm, Sueño {round(w.get('sleepSecs', 0)/3600, 1)}hs" for w in wellness_data])
+# Función segura para procesar biometría nula sin romper el script
+def safe_sleep(val): return round((val or 0) / 3600, 1)
+
+bio_text = "\n".join([f"Día {w['id']}: HRV {w.get('hrv', 'N/A')}ms, RHR {w.get('restingHR', 'N/A')}ppm, Sueño {safe_sleep(w.get('sleepSecs'))}hs" for w in wellness_data])
 
 prompt_maestro = f"""
 Actuás como mi Analista de Datos de Rendimiento Deportivo. Mi entrenador principal (Marcos) ya se encarga de la planificación estratégica, por lo que tu rol es puramente analítico.
