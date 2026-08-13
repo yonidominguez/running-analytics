@@ -117,7 +117,7 @@ plt.savefig("reports/03_eficiencia_fc.png", dpi=300)
 plt.close()
 
 # ==========================================
-# 5. INTELIGENCIA DEPORTIVA CON GEMINI (Súper Prompt)
+# 5. INTELIGENCIA DEPORTIVA CON GEMINI
 # ==========================================
 print("🧠 Procesando IA...")
 # Forzamos la API v1 (estable)
@@ -157,20 +157,26 @@ Instrucciones:
 3. Redactá un diagnóstico directo de 3 párrafos. Sin saludos ni frases motivacionales. Solo datos duros y evaluación de readiness.
 """
 
-try:
-    print("Intentando conectar con gemini-2.0-flash...")
-    response = client.models.generate_content(
-        model='gemini-2.0-flash', 
-        contents=prompt_maestro
-    )
-except Exception as e:
-    print(f"⚠️ Error con 2.0-flash ({e}). Ejecutando fallback a 1.5-flash...")
-    response = client.models.generate_content(
-        model='gemini-1.5-flash', 
-        contents=prompt_maestro
-    )
+modelos = ['gemini-2.5-flash', 'gemini-2.5-flash-8b', 'gemini-1.5-flash-8b']
+response = None
 
-with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as file:
-    file.write(response.text)
+for modelo in modelos:
+    try:
+        print(f"🔄 Intentando con {modelo}...")
+        response = client.models.generate_content(
+            model=modelo,
+            contents=prompt_maestro
+        )
+        print(f"✅ Éxito con {modelo}")
+        break
+    except Exception as e:
+        print(f"⚠️ Falló {modelo}: {e}")
+        continue
 
-print("✅ Pipeline de IA ejecutado con éxito.")
+if response is None:
+    raise Exception("❌ Todos los modelos fallaron. Revisá tu API Key o la disponibilidad de modelos.")
+
+with open("reports/00_Analisis_Inteligencia_Deportiva.txt", "w", encoding="utf-8") as f:
+    f.write(response.text)
+
+print("✅ Análisis de IA guardado.")
