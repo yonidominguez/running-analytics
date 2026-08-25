@@ -37,7 +37,7 @@ Automatizado de punta a punta con **GitHub Actions** con un **costo de infraestr
                                                   ▼
                                        [SMTP Gmail ──► Atleta]
 
-> Para conocer en profundidad las decisiones técnicas, costos y trade-offs, consulta el [[ADR-001.md]]([ur](https://github.com/yonidominguez/running-analytics/blob/main/ADR-001.md)l).
+> Para conocer en profundidad las decisiones técnicas, costos y trade-offs, consulta el [ADR-001.md](ADR-001.md).
 
 ---
 
