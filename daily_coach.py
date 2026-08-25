@@ -17,40 +17,59 @@ if not all([ATHLETE_ID, API_KEY, GEMINI_KEY, GMAIL_USER, GMAIL_PASS]):
     sys.exit("❌ Faltan credenciales en los Secrets de GitHub.")
 
 auth = ("API_KEY", API_KEY)
+BASE_URL = "https://intervals.icu/api/v1"
 
-# 2. Ventana temporal (Buscamos en los últimos 7 días)
+# 2. Ventana temporal (últimos 7 días en hora local UTC-3)
 arg_time = datetime.now(timezone.utc) - timedelta(hours=3)
 start_date = (arg_time - timedelta(days=7)).strftime("%Y-%m-%d")
 
-# 3. Obtener actividades recientes
-act_res = requests.get(
-    f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/activities?oldest={start_date}",
-    auth=auth
-).json()
+# 3. Obtener listado de actividades recientes
+print("🔄 Obteniendo listado de actividades...")
+activities_res = requests.get(
+    f"{BASE_URL}/athlete/{ATHLETE_ID}/activities",
+    auth=auth,
+    params={"oldest": start_date}
+)
+activities_res.raise_for_status()
+activities = activities_res.json()
 
-if not act_res or not isinstance(act_res, list):
+if not activities or not isinstance(activities, list):
     print("No hay actividades registradas en los últimos 7 días.")
     sys.exit(0)
 
-# Filtrar actividades de Running
-runs = [a for a in act_res if a.get("type") in ["Run", "VirtualRun"]] or act_res
+# 4. Seleccionar la actividad principal de running
+runs = [a for a in activities if a.get("type") in ["Run", "VirtualRun"]]
 
-# Tomamos la fecha de la actividad más reciente
+if not runs:
+    print("No hay actividades de running en los últimos 7 días.")
+    sys.exit(0)
+
+# Fecha de la corrida más reciente dentro del rango
 latest_date = max(a.get("start_date_local", a.get("start_date", ""))[:10] for a in runs)
 target_runs = [a for a in runs if (a.get("start_date_local") or a.get("start_date", "")).startswith(latest_date)]
 
-# Estrategia híbrida: si existe etiqueta '#principal', tiene prioridad; si no, mayor distancia
+# Prioridad a #principal, luego mayor distancia
 primary_tag = "#principal"
 tagged_runs = [a for a in target_runs if primary_tag in a.get("name", "").lower()]
-
-if tagged_runs:
-    activity = max(tagged_runs, key=lambda x: x.get("distance", 0))
-else:
-    activity = max(target_runs, key=lambda x: x.get("distance", 0))
+activity = max(tagged_runs, key=lambda x: x.get("distance", 0)) if tagged_runs else max(target_runs, key=lambda x: x.get("distance", 0))
 
 activity_id = activity["id"]
+activity_name = activity.get("name", "Sin nombre")
+print(f"✅ Actividad seleccionada: {activity_name} (ID: {activity_id}) - Fecha: {latest_date}")
 
-# Cálculo de ritmo promedio general
+# 5. Obtener el detalle completo de la actividad individual
+print("🔄 Obteniendo detalle de la actividad...")
+detail_res = requests.get(
+    f"{BASE_URL}/activity/{activity_id}",
+    auth=auth
+)
+detail_res.raise_for_status()
+detail = detail_res.json()
+
+# 6. Extraer intervalos / laps de forma segura
+laps_raw = detail.get("icu_intervals", []) if isinstance(detail, dict) else []
+
+# 7. Cálculo de ritmo promedio general
 total_dist_km = activity.get("distance", 0) / 1000
 total_dur_sec = activity.get("moving_time", activity.get("elapsed_time", 0))
 if total_dist_km > 0 and total_dur_sec > 0:
@@ -59,13 +78,7 @@ if total_dist_km > 0 and total_dur_sec > 0:
 else:
     avg_pace_str = "--"
 
-# 4. Detalle de intervalos / laps (conversión m/s -> min/km)
-detail = requests.get(
-    f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/activities/{activity_id}",
-    auth=auth
-).json()
-
-laps_raw = detail.get("icu_intervals", [])
+# 8. Formatear detalle de vueltas
 lap_lines = []
 for i, lap in enumerate(laps_raw, start=1):
     dist = lap.get("distance", 0)
@@ -82,26 +95,34 @@ for i, lap in enumerate(laps_raw, start=1):
 
 laps_summary = "\n".join(lap_lines) if lap_lines else "Sin laps segmentados"
 
-# 5. Plan del día (Evento en Intervals en la fecha de la actividad)
+# 9. Obtener el evento planificado para esa fecha
+print("🔄 Obteniendo evento planificado...")
 events_res = requests.get(
-    f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/events?oldest={latest_date}&newest={latest_date}",
-    auth=auth
-).json()
+    f"{BASE_URL}/athlete/{ATHLETE_ID}/events",
+    auth=auth,
+    params={"oldest": latest_date, "newest": latest_date}
+)
+events_res.raise_for_status()
+events = events_res.json()
 
 planned_txt = "Sin evento planificado asociado en Intervals"
-if events_res and isinstance(events_res, list):
-    best_event = max(events_res, key=lambda x: x.get("planned_distance", 0) or x.get("duration", 0))
+if events and isinstance(events, list):
+    best_event = max(events, key=lambda x: x.get("planned_distance", 0) or x.get("duration", 0))
     planned_txt = f"{best_event.get('name', 'Plan')} - {best_event.get('description', '')}"
 
-# 6. Estado de fatiga (Wellness para esa fecha)
+# 10. Obtener métricas de fatiga (Wellness)
+print("🔄 Obteniendo estado de fatiga (CTL/ATL/TSB)...")
 wellness_res = requests.get(
-    f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness?oldest={latest_date}&newest={latest_date}",
-    auth=auth
-).json()
+    f"{BASE_URL}/athlete/{ATHLETE_ID}/wellness",
+    auth=auth,
+    params={"oldest": latest_date, "newest": latest_date}
+)
+wellness_res.raise_for_status()
+wellness_data = wellness_res.json()
 
 ctl_str, atl_str, tsb_str = "N/A", "N/A", "N/A"
-if wellness_res and isinstance(wellness_res, list):
-    w = wellness_res[-1]
+if wellness_data and isinstance(wellness_data, list):
+    w = wellness_data[-1]
     ctl = w.get("ctl")
     atl = w.get("atl")
     tsb = w.get("tsb")
@@ -109,7 +130,8 @@ if wellness_res and isinstance(wellness_res, list):
     atl_str = f"{atl:.1f}" if isinstance(atl, (int, float)) else "N/A"
     tsb_str = f"{tsb:.1f}" if isinstance(tsb, (int, float)) else "N/A"
 
-# 7. Generación del reporte con Gemini
+# 11. Generación del reporte con Gemini
+print("🧠 Generando análisis con Gemini...")
 client = genai.Client(api_key=GEMINI_KEY)
 
 prompt = f"""
@@ -149,7 +171,8 @@ try:
 except Exception as e:
     feedback = f"❌ Error al consultar la API de Gemini: {str(e)}"
 
-# 8. Envío por correo
+# 12. Envío por correo
+print("📧 Enviando reporte por correo...")
 msg = MIMEText(feedback, "plain", "utf-8")
 msg["Subject"] = f"🏃 Coach Report: {activity.get('name')} ({latest_date})"
 msg["From"] = GMAIL_USER
