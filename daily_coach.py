@@ -6,24 +6,25 @@ from datetime import datetime, timedelta, timezone
 import requests
 from google import genai
 
-# 1. Validación de variables de entorno
+# 1. Variables de entorno
 ATHLETE_ID = os.environ.get("INTERVALS_ATHLETE_ID")
 API_KEY = os.environ.get("INTERVALS_API_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_KEY = os.environ.get("GROQ_API_KEY")
 GMAIL_USER = os.environ.get("GMAIL_USER")
 GMAIL_PASS = os.environ.get("GMAIL_APP_PASSWORD")
 
-if not all([ATHLETE_ID, API_KEY, GEMINI_KEY, GMAIL_USER, GMAIL_PASS]):
-    sys.exit("❌ Faltan credenciales en los Secrets de GitHub.")
+if not all([ATHLETE_ID, API_KEY, GMAIL_USER, GMAIL_PASS]):
+    sys.exit("❌ Faltan credenciales base en los Secrets de GitHub.")
 
 auth = ("API_KEY", API_KEY)
 BASE_URL = "https://intervals.icu/api/v1"
 
-# 2. Ventana temporal (últimos 7 días en hora local UTC-3)
+# 2. Ventana temporal (últimos 7 días UTC-3)
 arg_time = datetime.now(timezone.utc) - timedelta(hours=3)
 start_date = (arg_time - timedelta(days=7)).strftime("%Y-%m-%d")
 
-# 3. Obtener listado de actividades recientes
+# 3. Ingesta de actividades
 print("🔄 Obteniendo listado de actividades...")
 activities_res = requests.get(
     f"{BASE_URL}/athlete/{ATHLETE_ID}/activities",
@@ -37,18 +38,15 @@ if not activities or not isinstance(activities, list):
     print("No hay actividades registradas en los últimos 7 días.")
     sys.exit(0)
 
-# 4. Seleccionar la actividad principal de running
+# 4. Selección de actividad principal de Running
 runs = [a for a in activities if a.get("type") in ["Run", "VirtualRun"]]
-
 if not runs:
-    print("No hay actividades de running en los últimos 7 días.")
+    print("No hay actividades de running recientes.")
     sys.exit(0)
 
-# Fecha de la corrida más reciente dentro del rango
 latest_date = max(a.get("start_date_local", a.get("start_date", ""))[:10] for a in runs)
 target_runs = [a for a in runs if (a.get("start_date_local") or a.get("start_date", "")).startswith(latest_date)]
 
-# Prioridad a #principal, luego mayor distancia
 primary_tag = "#principal"
 tagged_runs = [a for a in target_runs if primary_tag in a.get("name", "").lower()]
 activity = max(tagged_runs, key=lambda x: x.get("distance", 0)) if tagged_runs else max(target_runs, key=lambda x: x.get("distance", 0))
@@ -57,19 +55,13 @@ activity_id = activity["id"]
 activity_name = activity.get("name", "Sin nombre")
 print(f"✅ Actividad seleccionada: {activity_name} (ID: {activity_id}) - Fecha: {latest_date}")
 
-# 5. Obtener el detalle completo de la actividad individual
+# 5. Detalle de actividad e intervalos
 print("🔄 Obteniendo detalle de la actividad...")
-detail_res = requests.get(
-    f"{BASE_URL}/activity/{activity_id}",
-    auth=auth
-)
+detail_res = requests.get(f"{BASE_URL}/activity/{activity_id}", auth=auth)
 detail_res.raise_for_status()
 detail = detail_res.json()
-
-# 6. Extraer intervalos / laps de forma segura
 laps_raw = detail.get("icu_intervals", []) if isinstance(detail, dict) else []
 
-# 7. Cálculo de ritmo promedio general
 total_dist_km = activity.get("distance", 0) / 1000
 total_dur_sec = activity.get("moving_time", activity.get("elapsed_time", 0))
 if total_dist_km > 0 and total_dur_sec > 0:
@@ -78,62 +70,38 @@ if total_dist_km > 0 and total_dur_sec > 0:
 else:
     avg_pace_str = "--"
 
-# 8. Formatear detalle de vueltas
 lap_lines = []
 for i, lap in enumerate(laps_raw, start=1):
     dist = lap.get("distance", 0)
     dur = lap.get("moving_time", lap.get("elapsed_time", 0))
     hr = lap.get("average_heartrate", "--")
-    
     if dist > 0 and dur > 0:
         p_sec = (dur / dist) * 1000
         p_str = f"{int(p_sec // 60)}:{int(p_sec % 60):02d} min/km"
     else:
         p_str = "--"
-        
     lap_lines.append(f"Vuelta {i}: {dist:.0f}m | {dur}s | {p_str} | FC: {hr} bpm")
 
 laps_summary = "\n".join(lap_lines) if lap_lines else "Sin laps segmentados"
 
-# 9. Obtener el evento planificado para esa fecha
-print("🔄 Obteniendo evento planificado...")
-events_res = requests.get(
-    f"{BASE_URL}/athlete/{ATHLETE_ID}/events",
-    auth=auth,
-    params={"oldest": latest_date, "newest": latest_date}
-)
-events_res.raise_for_status()
-events = events_res.json()
-
+# 6. Evento planificado y Wellness
+print("🔄 Obteniendo planificación y fatiga...")
+events_res = requests.get(f"{BASE_URL}/athlete/{ATHLETE_ID}/events", auth=auth, params={"oldest": latest_date, "newest": latest_date}).json()
 planned_txt = "Sin evento planificado asociado en Intervals"
-if events and isinstance(events, list):
-    best_event = max(events, key=lambda x: x.get("planned_distance", 0) or x.get("duration", 0))
+if events_res and isinstance(events_res, list):
+    best_event = max(events_res, key=lambda x: x.get("planned_distance", 0) or x.get("duration", 0))
     planned_txt = f"{best_event.get('name', 'Plan')} - {best_event.get('description', '')}"
 
-# 10. Obtener métricas de fatiga (Wellness)
-print("🔄 Obteniendo estado de fatiga (CTL/ATL/TSB)...")
-wellness_res = requests.get(
-    f"{BASE_URL}/athlete/{ATHLETE_ID}/wellness",
-    auth=auth,
-    params={"oldest": latest_date, "newest": latest_date}
-)
-wellness_res.raise_for_status()
-wellness_data = wellness_res.json()
-
+wellness_res = requests.get(f"{BASE_URL}/athlete/{ATHLETE_ID}/wellness", auth=auth, params={"oldest": latest_date, "newest": latest_date}).json()
 ctl_str, atl_str, tsb_str = "N/A", "N/A", "N/A"
-if wellness_data and isinstance(wellness_data, list):
-    w = wellness_data[-1]
-    ctl = w.get("ctl")
-    atl = w.get("atl")
-    tsb = w.get("tsb")
+if wellness_res and isinstance(wellness_res, list):
+    w = wellness_res[-1]
+    ctl, atl, tsb = w.get("ctl"), w.get("atl"), w.get("tsb")
     ctl_str = f"{ctl:.1f}" if isinstance(ctl, (int, float)) else "N/A"
     atl_str = f"{atl:.1f}" if isinstance(atl, (int, float)) else "N/A"
     tsb_str = f"{tsb:.1f}" if isinstance(tsb, (int, float)) else "N/A"
 
-# 11. Generación del reporte con Gemini
-print("🧠 Generando análisis con Gemini...")
-client = genai.Client(api_key=GEMINI_KEY)
-
+# 7. Motor de Inteligencia con Fallback
 prompt = f"""
 Sos un entrenador de atletismo y analista de rendimiento. 
 Generá una devolución técnica del entrenamiento contrastando lo planificado con lo ejecutado.
@@ -147,7 +115,7 @@ EJECUTADO (Sesión Principal - Fecha: {latest_date}):
 - Tiempo en movimiento: {total_dur_sec/60:.1f} min
 - Ritmo promedio: {avg_pace_str}
 - FC Promedio: {activity.get('average_heartrate', '--')} bpm | FC Máx: {activity.get('max_heartrate', '--')} bpm
-- Compliance/Cumplimiento declarado: {activity.get('icu_compliance', 'N/A')}%
+- Compliance declarado: {activity.get('icu_compliance', 'N/A')}%
 
 DETALLE DE VUELTAS / INTERVALOS:
 {laps_summary}
@@ -162,18 +130,53 @@ Respondé en 4 bloques directos y concisos:
 4. Veredicto y recomendación para la próxima sesión considerando el TSB actual.
 """
 
-try:
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
-    feedback = response.text
-except Exception as e:
-    feedback = f"❌ Error al consultar la API de Gemini: {str(e)}"
+def call_groq(p):
+    if not GROQ_KEY:
+        return None
+    headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "system", "content": "Sos un entrenador de atletismo y analista de rendimiento. Generá análisis técnico conciso y riguroso."},
+            {"role": "user", "content": p}
+        ],
+        "temperature": 0.3
+    }
+    r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=25)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
 
-# 12. Envío por correo
+feedback = None
+model_used = None
+
+# Intento 1: Gemini 3.6 Flash
+if GEMINI_KEY:
+    try:
+        print("🧠 Intentando análisis con Gemini (gemini-3.6-flash)...")
+        client = genai.Client(api_key=GEMINI_KEY)
+        resp = client.models.generate_content(model="gemini-3.6-flash", contents=prompt)
+        feedback = resp.text
+        model_used = "Gemini 3.6 Flash"
+        print("✅ Análisis completado con Gemini.")
+    except Exception as e:
+        print(f"⚠️ Gemini no disponible ({e}). Activando fallback...")
+
+# Intento 2: Groq Llama 3.3 70B
+if not feedback and GROQ_KEY:
+    try:
+        print("🧠 Intentando análisis con Groq (Llama 3.3 70B)...")
+        feedback = call_groq(prompt)
+        model_used = "Groq Llama 3.3 70B"
+        print("✅ Análisis completado con Groq.")
+    except Exception as e:
+        print(f"⚠️ Error con Groq: {e}")
+
+if not feedback:
+    feedback = "❌ Error: No se pudo generar el análisis con ninguno de los modelos configurados."
+
+# 8. Envío por correo
 print("📧 Enviando reporte por correo...")
-msg = MIMEText(feedback, "plain", "utf-8")
+msg = MIMEText(f"[{model_used}]\n\n{feedback}", "plain", "utf-8")
 msg["Subject"] = f"🏃 Coach Report: {activity.get('name')} ({latest_date})"
 msg["From"] = GMAIL_USER
 msg["To"] = GMAIL_USER
@@ -182,6 +185,6 @@ try:
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(GMAIL_USER, GMAIL_PASS)
         server.sendmail(GMAIL_USER, GMAIL_USER, msg.as_string())
-    print("✅ Feedback generado y enviado por correo.")
+    print("✅ Reporte despachado exitosamente.")
 except Exception as e:
-    print(f"❌ Error en el envío de correo: {e}")
+    print(f"❌ Error en el envío SMTP: {e}")
