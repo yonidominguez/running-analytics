@@ -7,13 +7,23 @@ on:
 
 jobs:
   # ==========================================
-  # JOB 1: Coach Diario (Gemini + Intervals)
+  # JOB 1: Coach Diario (TP Sync + Gemini + Intervals)
   # ==========================================
   daily-coach-report:
     runs-on: ubuntu-latest
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v4
+
+      - name: Sincronizar TrainingPeaks a Intervals (tp2intervals)
+        if: ${{ secrets.TP_COOKIE != '' }}
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -e INTERVALS_API_KEY="${{ secrets.INTERVALS_API_KEY }}" \
+            -e INTERVALS_ATHLETE_ID="${{ secrets.INTERVALS_ATHLETE_ID }}" \
+            -e TP_AUTH_COOKIE="${{ secrets.TP_COOKIE }}" \
+            ghcr.io/freekode/tp2intervals/tp2intervals:latest --sync-calendar
 
       - name: Configurar Python
         uses: actions/setup-python@v5
@@ -34,7 +44,7 @@ jobs:
         run: python daily_coach.py
 
   # ==========================================
-  # JOB 2: Análisis Histórico y Gráficos (Semanal/Mensual)
+  # JOB 2: Análisis Histórico y Gráficos (Semanal)
   # ==========================================
   build-and-analyze:
     runs-on: ubuntu-latest
@@ -45,7 +55,6 @@ jobs:
       - name: Validar ejecución semanal (Lunes 02:00 UTC / Domingo 23:00 ART)
         id: check_run
         run: |
-          # Solo corre el reporte semanal los lunes UTC (día 1) o si es disparo manual
           if [ "$(date +%u)" -eq 1 ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "is_weekly_run=true" >> $GITHUB_ENV
           else
