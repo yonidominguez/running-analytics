@@ -16,14 +16,22 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Sincronizar TrainingPeaks a Intervals (tp2intervals)
-        if: ${{ secrets.TP_COOKIE != '' }}
         continue-on-error: true
+        env:
+          TP_AUTH_COOKIE: ${{ secrets.TP_COOKIE }}
+          INTERVALS_API_KEY: ${{ secrets.INTERVALS_API_KEY }}
+          INTERVALS_ATHLETE_ID: ${{ secrets.INTERVALS_ATHLETE_ID }}
         run: |
-          docker run --rm \
-            -e INTERVALS_API_KEY="${{ secrets.INTERVALS_API_KEY }}" \
-            -e INTERVALS_ATHLETE_ID="${{ secrets.INTERVALS_ATHLETE_ID }}" \
-            -e TP_AUTH_COOKIE="${{ secrets.TP_COOKIE }}" \
-            ghcr.io/freekode/tp2intervals/tp2intervals:latest --sync-calendar
+          if [ -n "$TP_AUTH_COOKIE" ]; then
+            echo "Sincronizando TrainingPeaks con Intervals.icu..."
+            docker run --rm \
+              -e INTERVALS_API_KEY="$INTERVALS_API_KEY" \
+              -e INTERVALS_ATHLETE_ID="$INTERVALS_ATHLETE_ID" \
+              -e TP_AUTH_COOKIE="$TP_AUTH_COOKIE" \
+              ghcr.io/freekode/tp2intervals/tp2intervals:latest --sync-calendar
+          else
+            echo "TP_COOKIE no configurado en Secrets. Omitiendo sincronización."
+          fi
 
       - name: Configurar Python
         uses: actions/setup-python@v5
