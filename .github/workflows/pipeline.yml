@@ -2,13 +2,15 @@ name: Automated Running Data Pipeline
 
 on:
   schedule:
-    - cron: '0 2 * * 1'  # Lunes 2:00 UTC = Domingo 23:00 ART
+    - cron: '0 2 * * *'  # Todos los días a las 02:00 UTC = 23:00 ART
   workflow_dispatch:
 
 jobs:
-  build-and-analyze:
+  # ==========================================
+  # JOB 1: Coach Diario (Gemini + Intervals)
+  # ==========================================
+  daily-coach-report:
     runs-on: ubuntu-latest
-
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v4
@@ -20,10 +22,50 @@ jobs:
 
       - name: Instalar dependencias
         run: |
+          pip install requests google-genai
+
+      - name: Ejecutar Daily Coach
+        env:
+          INTERVALS_ATHLETE_ID: ${{ secrets.INTERVALS_ATHLETE_ID }}
+          INTERVALS_API_KEY: ${{ secrets.INTERVALS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GMAIL_USER: ${{ secrets.MAIL_USERNAME }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python daily_coach.py
+
+  # ==========================================
+  # JOB 2: Análisis Histórico y Gráficos (Semanal/Mensual)
+  # ==========================================
+  build-and-analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Validar ejecución semanal (Lunes 02:00 UTC / Domingo 23:00 ART)
+        id: check_run
+        run: |
+          # Solo corre el reporte semanal los lunes UTC (día 1) o si es disparo manual
+          if [ "$(date +%u)" -eq 1 ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "is_weekly_run=true" >> $GITHUB_ENV
+          else
+            echo "is_weekly_run=false" >> $GITHUB_ENV
+          fi
+
+      - name: Configurar Python
+        if: env.is_weekly_run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        if: env.is_weekly_run == 'true'
+        run: |
           python -m pip install --upgrade pip
           pip install pandas requests matplotlib seaborn google-genai
 
       - name: Ejecutar Pipeline de Análisis
+        if: env.is_weekly_run == 'true'
         env:
           INTERVALS_ATHLETE_ID: ${{ secrets.INTERVALS_ATHLETE_ID }}
           INTERVALS_API_KEY: ${{ secrets.INTERVALS_API_KEY }}
@@ -31,6 +73,7 @@ jobs:
         run: python main.py
 
       - name: Lógica de Frecuencia Mensual
+        if: env.is_weekly_run == 'true'
         id: check_date
         run: |
           DAY=$(date +%d)
@@ -41,7 +84,7 @@ jobs:
           fi
 
       - name: Enviar Reporte COMPLETO (Gráficos + IA) - 1ra Semana
-        if: env.send_graphs == 'true'
+        if: env.is_weekly_run == 'true' && env.send_graphs == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -56,7 +99,7 @@ jobs:
           attachments: reports/*
 
       - name: Enviar Reporte SOLO TEXTO (IA) - Resto del mes
-        if: env.send_graphs == 'false'
+        if: env.is_weekly_run == 'true' && env.send_graphs == 'false'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -71,6 +114,7 @@ jobs:
           attachments: reports/00_Analisis_Inteligencia_Deportiva.txt
 
       - name: Empaquetar y Subir Artefactos al Repo (Backup)
+        if: env.is_weekly_run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: reporte-rendimiento-running
