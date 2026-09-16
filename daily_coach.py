@@ -66,20 +66,23 @@ start_time_local = activity.get("start_date_local", activity.get("start_date", "
 print(f"✅ Actividad seleccionada: {activity_name} (ID: {activity_id}) - Fecha: {latest_date}")
 
 # ==========================================
-# 5. DETALLE DE ACTIVIDAD Y LAPS (CORREGIDO)
+# 5. DETALLE DE ACTIVIDAD E INTERVALOS
 # ==========================================
 print("🔄 Obteniendo detalle de la actividad...")
 detail_res = requests.get(f"{BASE_URL}/activity/{activity_id}", auth=auth, timeout=15)
 detail_res.raise_for_status()
 detail = detail_res.json()
 
-# 🔥 CORRECCIÓN CLAVE: priorizar icu_laps (autolaps de Garmin)
+# Prioridad a icu_intervals (tabla exacta de la UI web)
 laps_raw = (
-    detail.get("icu_laps") 
+    detail.get("icu_intervals") 
+    or detail.get("icu_laps") 
     or detail.get("laps") 
-    or detail.get("icu_intervals") 
     or []
 )
+
+print(f"🔎 Intervalos detectados: {len(laps_raw)}")
+print("🔎 Tipos crudos:", sorted({(lap.get("type") or "SIN_TYPE") for lap in laps_raw}))
 
 # ==========================================
 # 6. MÉTRICAS BIOMECÁNICAS Y EFICIENCIA
@@ -117,31 +120,76 @@ is_race = any(k in activity_name.lower() for k in race_keywords) or activity.get
 mode_tag = "COMPETICIÓN / CARRERA" if is_race else "ENTRENAMIENTO REGULAR"
 
 # ==========================================
-# 8. PROCESAMIENTO DE LAPS (VUELTAS)
+# 8. PROCESAMIENTO ESTRUCTURADO DE INTERVALOS
 # ==========================================
+TYPE_LABEL = {
+    "WARMUP":   "ENTRADA EN CALOR",
+    "COOLDOWN": "VUELTA A LA CALMA",
+    "WORK":     None,   # Genera REP {work_count}
+    "RECOVERY": None,   # Genera PAUSA {recovery_count}
+    "REST":     None,   # Genera PAUSA {recovery_count}
+}
+
 lap_lines = []
+work_count = 0
+recovery_count = 0
+
 for i, lap in enumerate(laps_raw, start=1):
     dist = lap.get("distance", 0)
     dur = lap.get("moving_time", lap.get("elapsed_time", 0))
     hr = lap.get("average_heartrate", "--")
     cad = lap.get("average_cadence")
-    
-    # Normalización de cadencia: si es <120, asumimos que es RPM de una pierna -> multiplicar por 2
+    raw_type = (lap.get("type") or "").upper()
+
+    if raw_type in TYPE_LABEL:
+        label = TYPE_LABEL[raw_type]
+        if label is None:
+            if raw_type == "WORK":
+                work_count += 1
+                tag = f"REP {work_count}"
+            else:
+                recovery_count += 1
+                tag = f"PAUSA {recovery_count}"
+        else:
+            tag = label
+    else:
+        tag = f"BLOQUE {i}"
+
+    # Normalización de cadencia (Intervals v1 API entrega RPM por pierna en running)
     if isinstance(cad, (int, float)):
         cad_spm = cad * 2 if cad < 120 else cad
         cad_str = f" | Cad: {cad_spm:.0f} spm"
     else:
         cad_str = ""
-    
+
+    # Ritmo
     if dist > 0 and dur > 0:
         p_sec = (dur / dist) * 1000
         p_str = f"{int(p_sec // 60)}:{int(p_sec % 60):02d} min/km"
     else:
         p_str = "--"
-        
-    lap_lines.append(f"Km {i} ({dist:.0f}m): {p_str} | FC: {hr} bpm{cad_str}")
 
-laps_summary = "\n".join(lap_lines) if lap_lines else "Sin laps segmentados"
+    dur_min = int(dur // 60)
+    dur_sec = int(dur % 60)
+    dur_str = f"{dur_min}m{dur_sec:02d}s" if dur_min > 0 else f"{dur_sec}s"
+
+    lap_lines.append(f"[{tag}] {dist:.0f}m en {dur_str} ({p_str}) | FC: {hr} bpm{cad_str}")
+
+# Clasificación y formateo limpio de cabecera (pluralización simétrica)
+if work_count >= 1:
+    session_type = "interval"
+    reps_word = "REP" if work_count == 1 else "REPS"
+    pause_word = "PAUSA" if recovery_count == 1 else "PAUSAS"
+    pause_part = f" + {recovery_count} {pause_word}" if recovery_count > 0 else ""
+    laps_header = f"{work_count} {reps_word}{pause_part}"
+elif lap_lines:
+    session_type = "continuous"
+    laps_header = "BLOQUES DE RODAJE CONTINUO"
+else:
+    session_type = "continuous"
+    laps_header = "RODAJE CONTINUO SIN INTERVALOS"
+
+laps_summary = "\n".join(lap_lines) if lap_lines else "Sesión continua sin subdivisiones internas."
 
 # ==========================================
 # 9. CLIMA DINÁMICO (OPEN-METEO)
@@ -208,7 +256,7 @@ if wellness_res and isinstance(wellness_res, list):
     rhr_str = f"{rhr:.0f} bpm" if isinstance(rhr, (int, float)) else "N/A"
 
 # ==========================================
-# 11. PROMPT DINÁMICO SEGÚN MODO
+# 11. PROMPT DINÁMICO
 # ==========================================
 guideline_mode = (
     "Esta sesión fue una COMPETICIÓN/CARRERA. Enfocate en gestión táctica del pacing (splits), entrega en umbral y protocolo de descarga post-esfuerzo máximo."
@@ -231,22 +279,27 @@ OBJETIVO PLANIFICADO:
 
 EJECUTADO (Fecha: {latest_date}):
 - Nombre: {activity.get('name')}
-- Distancia: {total_dist_km:.2f} km | Desnivel acumulado: {elevation_gain:.0f} m
-- Tiempo: {total_dur_sec/60:.1f} min | Ritmo Promedio: {avg_pace_str}
+- Distancia Total: {total_dist_km:.2f} km | Desnivel acumulado: {elevation_gain:.0f} m
+- Tiempo Total: {total_dur_sec/60:.1f} min | Ritmo Promedio Global: {avg_pace_str}
 - FC Promedio: {avg_hr} bpm | FC Máxima: {max_hr} bpm
 - Factor de Eficiencia Aeróbica (EF): {ef_str}
 - Cadencia Promedio: {avg_cadence_str} | Cadencia Máx: {max_cadence_str}
 - Cumplimiento declarado: {activity.get('icu_compliance', 'N/A')}%
 
-DETALLE DE VUELTAS / LAPS (1 km):
+TIPO DE SESIÓN: {session_type.upper()}
+DESGLOSE DE INTERVALOS ({laps_header}):
 {laps_summary}
 
 ESTADO FISIOLÓGICO Y RECUPERACIÓN PREVIA:
 - Estado del Sistema Nervioso (HRV previo): {hrv_str} | Pulso en Reposo (RHR): {rhr_str}
 - Modelo de Carga: Fitness (CTL): {ctl_str} | Fatiga (ATL): {atl_str} | Forma (TSB): {tsb_str}
 
+REGLAS DE AUDITORÍA:
+1. Si TIPO DE SESIÓN es INTERVAL, evalúa la variabilidad entre las repeticiones ([REP N]) y las recuperaciones ([PAUSA N]). Los datos están completos; no reclames ausencia de segmentación. Si aparecen etiquetas [BLOQUE N], infiere su rol analizando el ritmo y la FC.
+2. Si TIPO DE SESIÓN es CONTINUOUS, evalúa la estabilidad aeróbica y deriva cardíaca global sin exigir pausas formales. Si todos los segmentos figuran como [BLOQUE N] pero el ritmo entre ellos no es homogéneo, analiza la variabilidad como una posible estructura no tipada.
+
 Respondé en 4 bloques directos y concisos:
-1. Precisión de ritmos y gestión del pacing (contrastando plan vs laps).
+1. Precisión de ritmos y gestión del pacing (contrastando plan vs intervalos ejecutados).
 2. Respuesta cardiovascular y Eficiencia Aeróbica (análisis de EF en {ef_str} cruzado con clima y deriva cardíaca).
 3. Biomecánica y recuperación previa (evaluación de cadencia en {avg_cadence_str} y estado del HRV/RHR al largar).
 4. Veredicto y recomendación para la próxima sesión considerando el TSB actual ({tsb_str}).
