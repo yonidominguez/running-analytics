@@ -294,47 +294,67 @@ Regla estricta: Si la sección de Vueltas dice 'No se recibieron vueltas de esta
 # ==========================================
 # 12. INFERENCIA CON FALLBACK (Gemini -> Groq)
 # ==========================================
+errors = []  # acumula el motivo exacto de cada fallo (se incluye en el mail si todo falla)
+
+def call_gemini(p):
+    if not GEMINI_KEY:
+        errors.append("Gemini: GEMINI_API_KEY vacía en el workflow")
+        return None, None
+    client = genai.Client(api_key=GEMINI_KEY)
+    # Misma vía (Interactions API) y mismos modelos que ya funcionan en main.py
+    for modelo in ["gemini-3.6-flash", "gemini-3.5-flash-lite"]:
+        try:
+            print(f"🧠 Intentando análisis con Gemini ({modelo})...")
+            interaction = client.interactions.create(model=modelo, input=p, store=False)
+            texto = (interaction.output_text or "").strip()
+            if texto:
+                print(f"✅ Análisis completado con {modelo}.")
+                return texto, f"Gemini {modelo}"
+            errors.append(f"{modelo}: respuesta vacía")
+            print(f"⚠️ {modelo}: respuesta vacía")
+        except Exception as e:
+            errors.append(f"{modelo}: {type(e).__name__}: {e}")
+            print(f"⚠️ Falló {modelo}: {type(e).__name__}: {e}")
+    return None, None
+
 def call_groq(p):
     if not GROQ_KEY:
-        return None
-    headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {"role": "system", "content": "Sos un entrenador de atletismo y analista de rendimiento. Respondé con rigurosidad técnica y sin preámbulos vacíos."},
-            {"role": "user", "content": p}
-        ],
-        "temperature": 0.3
-    }
-    r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=25)
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
-
-feedback = None
-model_used = None
-
-if GEMINI_KEY:
-    try:
-        print("🧠 Intentando análisis con Gemini (gemini-3.6-flash)...")
-        client = genai.Client(api_key=GEMINI_KEY)
-        resp = client.models.generate_content(model="gemini-3.6-flash", contents=prompt)
-        feedback = resp.text
-        model_used = "Gemini 3.6 Flash"
-        print("✅ Análisis completado con Gemini.")
-    except Exception as e:
-        print(f"⚠️ Gemini no disponible ({e}). Activando fallback...")
-
-if not feedback and GROQ_KEY:
+        errors.append("Groq: GROQ_API_KEY vacía en el workflow (fallback omitido)")
+        print("⚠️ GROQ_API_KEY vacía: no hay fallback disponible.")
+        return None, None
     try:
         print("🧠 Intentando análisis con Groq (Llama 3.3 70B)...")
-        feedback = call_groq(prompt)
-        model_used = "Groq Llama 3.3 70B"
-        print("✅ Análisis completado con Groq.")
+        headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [
+                {"role": "system", "content": "Sos un entrenador de running de confianza. Hablás de vos, cercano y directo, sin jerga técnica ni preámbulos."},
+                {"role": "user", "content": p}
+            ],
+            "temperature": 0.4
+        }
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=25)
+        if not r.ok:
+            errors.append(f"Groq: HTTP {r.status_code}: {r.text[:300]}")
+            print(f"⚠️ Groq HTTP {r.status_code}: {r.text[:300]}")
+            return None, None
+        texto = (r.json()["choices"][0]["message"]["content"] or "").strip()
+        if texto:
+            print("✅ Análisis completado con Groq.")
+            return texto, "Groq Llama 3.3 70B"
+        errors.append("Groq: respuesta vacía")
     except Exception as e:
-        print(f"⚠️ Error con Groq: {e}")
+        errors.append(f"Groq: {type(e).__name__}: {e}")
+        print(f"⚠️ Error con Groq: {type(e).__name__}: {e}")
+    return None, None
+
+feedback, model_used = call_gemini(prompt)
+if not feedback:
+    print("⚠️ Gemini no disponible. Activando fallback a Groq...")
+    feedback, model_used = call_groq(prompt)
 
 if not feedback:
-    feedback = "❌ Error: No se pudo generar el análisis con ninguno de los modelos configurados."
+    feedback = "❌ No se pudo generar el análisis con ninguno de los modelos.\n\nDetalle técnico:\n- " + "\n- ".join(errors)
     model_used = "Error Engine"
 
 # ==========================================
