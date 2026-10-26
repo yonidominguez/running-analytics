@@ -135,9 +135,9 @@ work_count = 0
 recovery_count = 0
 
 for i, lap in enumerate(laps_raw, start=1):
-    dist = lap.get("distance", 0)
-    dur = lap.get("moving_time", lap.get("elapsed_time", 0))
-    hr = lap.get("average_heartrate", "--")
+    dist = lap.get("distance") or 0
+    dur = lap.get("moving_time") or lap.get("elapsed_time") or 0
+    hr = lap.get("average_heartrate") or "--"
     cad = lap.get("average_cadence")
     raw_type = (lap.get("type") or "").upper()
 
