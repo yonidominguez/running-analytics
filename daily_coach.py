@@ -69,7 +69,7 @@ print(f"✅ Actividad seleccionada: {activity_name} (ID: {activity_id}) - Fecha:
 # 5. DETALLE DE ACTIVIDAD E INTERVALOS
 # ==========================================
 print("🔄 Obteniendo detalle de la actividad...")
-detail_res = requests.get(f"{BASE_URL}/activity/{activity_id}", auth=auth, timeout=15)
+detail_res = requests.get(f"{BASE_URL}/activity/{activity_id}", auth=auth, params={"intervals": "true"}, timeout=15)
 detail_res.raise_for_status()
 detail = detail_res.json()
 
@@ -189,7 +189,7 @@ else:
     session_type = "continuous"
     laps_header = "RODAJE CONTINUO SIN INTERVALOS"
 
-laps_summary = "\n".join(lap_lines) if lap_lines else "Sesión continua sin subdivisiones internas."
+laps_summary = "\n".join(lap_lines) if lap_lines else "No se recibieron vueltas de esta actividad."
 
 # ==========================================
 # 9. CLIMA DINÁMICO (OPEN-METEO)
@@ -265,44 +265,30 @@ guideline_mode = (
 )
 
 prompt = f"""
-Sos un entrenador de atletismo y analista de rendimiento.
-Generá una devolución técnica estructurada de la sesión.
+Sos mi entrenador de running de confianza. Me hablás de vos, cercano y directo, como un coach que me conoce, no como un informe ni con jerga académica.
 
-CONTEXTO DE LA SESIÓN: {mode_tag}
-{guideline_mode}
+Analizá estos datos de mi entrenamiento de hoy. Los datos crudos son para vos, no me los repitas como una lista. Traducí qué significan para mi cuerpo.
 
-CONDICIONES AMBIENTALES (Buenos Aires):
-{weather_info}
-
-OBJETIVO PLANIFICADO:
-{planned_txt}
-
-EJECUTADO (Fecha: {latest_date}):
+Datos de la sesión (Modo: {mode_tag}):
 - Nombre: {activity.get('name')}
-- Distancia Total: {total_dist_km:.2f} km | Desnivel acumulado: {elevation_gain:.0f} m
-- Tiempo Total: {total_dur_sec/60:.1f} min | Ritmo Promedio Global: {avg_pace_str}
-- FC Promedio: {avg_hr} bpm | FC Máxima: {max_hr} bpm
-- Factor de Eficiencia Aeróbica (EF): {ef_str}
-- Cadencia Promedio: {avg_cadence_str} | Cadencia Máx: {max_cadence_str}
-- Cumplimiento declarado: {activity.get('icu_compliance', 'N/A')}%
+- Distancia: {total_dist_km:.2f} km | Desnivel: {elevation_gain:.0f} m
+- Tiempo: {total_dur_sec/60:.1f} min | Ritmo: {avg_pace_str}
+- FC Promedio: {avg_hr} bpm | FC Máx: {max_hr} bpm
+- Cadencia: {avg_cadence_str}
+- Estado previo (HRV/RHR): {hrv_str} / {rhr_str}
+- Clima: {weather_info}
+- Planificado: {planned_txt}
 
-TIPO DE SESIÓN: {session_type.upper()}
-DESGLOSE DE INTERVALOS ({laps_header}):
+Vueltas/Intervalos detectados ({laps_header}):
 {laps_summary}
 
-ESTADO FISIOLÓGICO Y RECUPERACIÓN PREVIA:
-- Estado del Sistema Nervioso (HRV previo): {hrv_str} | Pulso en Reposo (RHR): {rhr_str}
-- Modelo de Carga: Fitness (CTL): {ctl_str} | Fatiga (ATL): {atl_str} | Forma (TSB): {tsb_str}
+Respondé en máximo 180 palabras, sin títulos, sin viñetas y sin saludos:
+1. Cómo salió la sesión hoy (una frase directa cruzando lo ejecutado con lo planificado).
+2. Qué se notó en el cuerpo (usa las métricas de pulso, ritmo y clima para deducir fatiga o frescura).
+3. Un solo punto a corregir o destacar.
+4. Qué hacer mañana (tipo de esfuerzo, sin mencionar números de TSB).
 
-REGLAS DE AUDITORÍA:
-1. Si TIPO DE SESIÓN es INTERVAL, evalúa la variabilidad entre las repeticiones ([REP N]) y las recuperaciones ([PAUSA N]). Los datos están completos; no reclames ausencia de segmentación. Si aparecen etiquetas [BLOQUE N], infiere su rol analizando el ritmo y la FC.
-2. Si TIPO DE SESIÓN es CONTINUOUS, evalúa la estabilidad aeróbica y deriva cardíaca global sin exigir pausas formales. Si todos los segmentos figuran como [BLOQUE N] pero el ritmo entre ellos no es homogéneo, analiza la variabilidad como una posible estructura no tipada.
-
-Respondé en 4 bloques directos y concisos:
-1. Precisión de ritmos y gestión del pacing (contrastando plan vs intervalos ejecutados).
-2. Respuesta cardiovascular y Eficiencia Aeróbica (análisis de EF en {ef_str} cruzado con clima y deriva cardíaca).
-3. Biomecánica y recuperación previa (evaluación de cadencia en {avg_cadence_str} y estado del HRV/RHR al largar).
-4. Veredicto y recomendación para la próxima sesión considerando el TSB actual ({tsb_str}).
+Regla estricta: Si la sección de Vueltas dice 'No se recibieron vueltas de esta actividad', asumí que hubo una falla de sincronización de datos, decímelo en una frase y evaluá el resto de las métricas.
 """
 
 # ==========================================
